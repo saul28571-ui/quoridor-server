@@ -1,6 +1,6 @@
 import http from 'node:http';
 import { WebSocketServer } from 'ws';
-import { randomInt } from 'node:crypto';
+import { randomInt, randomUUID } from 'node:crypto';
 
 const PORT = Number(process.env.PORT || 8080);
 // Para pruebas locales. En producción usa siempre una variable de entorno.
@@ -20,7 +20,8 @@ function newRoom() {
   while (rooms.has(id)) id = code();
   return {
     id,
-    clients: [],
+    clients: [null, null],
+    tokens: [randomUUID(), randomUUID()],
     positions: [[4, 8], [4, 0]],
     walls: [10, 10],
     hWalls: [],
@@ -39,13 +40,13 @@ function state(room) {
     type: 'state', room: room.id, positions: room.positions,
     walls: room.walls, hWalls: room.hWalls, vWalls: room.vWalls,
     turn: room.turn, winner: room.winner,
-    players: room.clients.length
+    players: room.clients.filter(Boolean).length
   };
 }
 
 function broadcast(room) {
   const packet = state(room);
-  for (const client of room.clients) send(client, packet);
+  for (const client of room.clients) if (client) send(client, packet);
 }
 
 function same(a, b) { return a[0] === b[0] && a[1] === b[1]; }
@@ -128,15 +129,27 @@ function finishTurn(room) {
 function handle(ws, data) {
   if (API_KEY && data.apiKey !== API_KEY) return send(ws, { type: 'error', message: 'API key inválida' });
   if (data.type === 'create_room') {
-    const room = newRoom(); rooms.set(room.id, room); room.clients.push(ws); ws.room = room; ws.player = 0;
-    send(ws, { type: 'room_created', room: room.id, player: 0 }); broadcast(room); return;
+    const room = newRoom(); rooms.set(room.id, room); room.clients[0] = ws; ws.room = room; ws.player = 0;
+    send(ws, { type: 'room_created', room: room.id, player: 0, token: room.tokens[0] }); broadcast(room); return;
   }
   if (data.type === 'join_room') {
     const room = rooms.get(String(data.room || '').toUpperCase());
     if (!room) return send(ws, { type: 'error', message: 'La sala no existe' });
-    if (room.clients.length >= 2) return send(ws, { type: 'error', message: 'La sala está llena' });
-    room.clients.push(ws); ws.room = room; ws.player = 1;
-    send(ws, { type: 'room_joined', room: room.id, player: 1 }); broadcast(room); return;
+    if (room.clients.filter(Boolean).length >= 2 || room.clients[1]) return send(ws, { type: 'error', message: 'La sala está llena' });
+    room.clients[1] = ws; ws.room = room; ws.player = 1;
+    send(ws, { type: 'room_joined', room: room.id, player: 1, token: room.tokens[1] }); broadcast(room); return;
+  }
+  if (data.type === 'reconnect') {
+    const room = rooms.get(String(data.room || '').toUpperCase());
+    if (!room) return send(ws, { type: 'error', message: 'La sala no existe' });
+    const player = room.tokens.indexOf(String(data.token || ''));
+    if (player < 0) return send(ws, { type: 'error', message: 'Token de reconexión inválido' });
+    if (room.clients[player] && room.clients[player] !== ws) {
+      try { room.clients[player].close(); } catch {}
+    }
+    room.clients[player] = ws; ws.room = room; ws.player = player;
+    send(ws, { type: 'reconnected', room: room.id, player, token: room.tokens[player] });
+    broadcast(room); return;
   }
   const room = ws.room;
   if (!room) return send(ws, { type: 'error', message: 'Primero crea o únete a una sala' });
@@ -164,9 +177,8 @@ wss.on('connection', ws => {
   ws.on('close', () => {
     const room = ws.room;
     if (!room) return;
-    room.clients = room.clients.filter(c => c !== ws);
-    for (const client of room.clients) send(client, { type: 'opponent_left' });
-    if (room.clients.length === 0) rooms.delete(room.id);
+    if (Number.isInteger(ws.player)) room.clients[ws.player] = null;
+    for (const client of room.clients) if (client) send(client, { type: 'opponent_left' });
   });
 });
 httpServer.listen(PORT, '0.0.0.0', () => console.log(`Quoridor server escuchando en el puerto ${PORT}`));

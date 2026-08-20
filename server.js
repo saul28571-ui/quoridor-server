@@ -128,7 +128,7 @@ function finishTurn(room) {
 function handle(ws, data) {
   if (API_KEY && data.apiKey !== API_KEY) return send(ws, { type: 'error', message: 'API key inválida' });
   if (data.type === 'create_room') {
-    const room = newRoom(); room.clients.push(ws); ws.room = room; ws.player = 0;
+    const room = newRoom(); rooms.set(room.id, room); room.clients.push(ws); ws.room = room; ws.player = 0;
     send(ws, { type: 'room_created', room: room.id, player: 0 }); broadcast(room); return;
   }
   if (data.type === 'join_room') {

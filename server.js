@@ -177,8 +177,10 @@ wss.on('connection', ws => {
   ws.on('close', () => {
     const room = ws.room;
     if (!room) return;
-    if (Number.isInteger(ws.player)) room.clients[ws.player] = null;
-    for (const client of room.clients) if (client) send(client, { type: 'opponent_left' });
+    if (Number.isInteger(ws.player) && room.clients[ws.player] === ws) {
+      room.clients[ws.player] = null;
+      for (const client of room.clients) if (client) send(client, { type: 'opponent_left' });
+    }
   });
 });
 httpServer.listen(PORT, '0.0.0.0', () => console.log(`Quoridor server escuchando en el puerto ${PORT}`));

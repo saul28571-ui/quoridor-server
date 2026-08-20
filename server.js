@@ -22,6 +22,7 @@ function newRoom() {
     id,
     clients: [null, null],
     tokens: [randomUUID(), randomUUID()],
+    names: ['Jugador 1', 'Jugador 2'],
     positions: [[4, 8], [4, 0]],
     walls: [10, 10],
     hWalls: [],
@@ -40,7 +41,7 @@ function state(room) {
     type: 'state', room: room.id, positions: room.positions,
     walls: room.walls, hWalls: room.hWalls, vWalls: room.vWalls,
     turn: room.turn, winner: room.winner,
-    players: room.clients.filter(Boolean).length
+    players: room.clients.filter(Boolean).length, names: room.names
   };
 }
 
@@ -129,14 +130,14 @@ function finishTurn(room) {
 function handle(ws, data) {
   if (API_KEY && data.apiKey !== API_KEY) return send(ws, { type: 'error', message: 'API key inválida' });
   if (data.type === 'create_room') {
-    const room = newRoom(); rooms.set(room.id, room); room.clients[0] = ws; ws.room = room; ws.player = 0;
+    const room = newRoom(); rooms.set(room.id, room); room.clients[0] = ws; room.names[0] = String(data.name || 'Jugador 1').slice(0, 18); ws.room = room; ws.player = 0;
     send(ws, { type: 'room_created', room: room.id, player: 0, token: room.tokens[0] }); broadcast(room); return;
   }
   if (data.type === 'join_room') {
     const room = rooms.get(String(data.room || '').toUpperCase());
     if (!room) return send(ws, { type: 'error', message: 'La sala no existe' });
     if (room.clients.filter(Boolean).length >= 2 || room.clients[1]) return send(ws, { type: 'error', message: 'La sala está llena' });
-    room.clients[1] = ws; ws.room = room; ws.player = 1;
+    room.clients[1] = ws; room.names[1] = String(data.name || 'Jugador 2').slice(0, 18); ws.room = room; ws.player = 1;
     send(ws, { type: 'room_joined', room: room.id, player: 1, token: room.tokens[1] }); broadcast(room); return;
   }
   if (data.type === 'reconnect') {

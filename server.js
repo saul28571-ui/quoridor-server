@@ -153,6 +153,13 @@ function handle(ws, data) {
   }
   const room = ws.room;
   if (!room) return send(ws, { type: 'error', message: 'Primero crea o únete a una sala' });
+  if (data.type === 'rematch') {
+    if (room.clients.filter(Boolean).length < 2) return send(ws, { type: 'error', message: 'Falta el segundo jugador' });
+    room.positions = [[4, 8], [4, 0]];
+    room.walls = [10, 10]; room.hWalls = []; room.vWalls = [];
+    room.turn = 0; room.winner = null;
+    broadcast(room); return;
+  }
   if (data.type === 'move') {
     if (room.clients.length < 2 || room.turn !== ws.player || room.winner !== null) return;
     const destination = [Number(data.x), Number(data.y)];

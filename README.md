@@ -1,15 +1,17 @@
-# Servidor Quoridor para Render
+# Quoridor server
 
-## Configuración en Render
-- Runtime: Node
-- Build Command: `npm install`
-- Start Command: `npm start`
-- Variable de entorno: `QUORIDOR_API_KEY` = `qrd_7F2m9K8x4P1v6L3`
+Servidor WebSocket Node.js para Quoridor. Escucha en `/ws` y conserva la compatibilidad del protocolo existente.
 
-Cuando Render cree la URL `https://NOMBRE.onrender.com`, el WebSocket será:
-`wss://NOMBRE.onrender.com/ws`
+## Mejoras incluidas
+- Temporizador autoritativo por turno (30 s por defecto, `QUORIDOR_TURN_SECONDS` configurable); el servidor valida el vencimiento y adjudica la victoria por tiempo.
+- Reconexión mediante token de sesión con ventana de 120 s.
+- Chat rápido con mensajes predefinidos (`chat`).
+- Estadísticas persistentes en `stats.json` y ranking consultable con `stats`.
+- Revancha (`rematch`) reinicia tablero y reloj sin romper sala.
 
-Este servidor mantiene salas en memoria. Está pensado para partidas activas de dos jugadores; si el servicio se reinicia, las salas se borran.
+No se despliega ni se modifica Render desde este paquete.
 
-## Protocolo y seguridad
-El servidor valida turno, movimientos, saltos, paredes, cruces y caminos disponibles. Las salas son de dos jugadores y permanecen en memoria; los tokens de reconexión permiten volver a ocupar el mismo asiento tras una desconexión.
+```bash
+npm install
+QUORIDOR_API_KEY=... npm start
+```

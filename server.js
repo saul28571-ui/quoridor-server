@@ -1,45 +1,68 @@
-import { WebSocketServer } from 'ws';
-import { randomInt, randomUUID } from 'node:crypto';
+import http from 'node:http';
 import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { randomUUID, randomInt } from 'node:crypto';
+import { WebSocketServer } from 'ws';
 
 const PORT = Number(process.env.PORT || 8080);
 const API_KEY = process.env.QUORIDOR_API_KEY || 'qrd_7F2m9K8x4P1v6L3';
-const TURN_SECONDS = Number(process.env.QUORIDOR_TURN_SECONDS || 30);
-const rooms = new Map();
-const tokens = new Map();
-const statsFile = new URL('./stats.json', import.meta.url);
-const stats = fs.existsSync(statsFile) ? JSON.parse(fs.readFileSync(statsFile, 'utf8')) : {};
+const TURN_SECONDS = Math.max(5, Number(process.env.QUORIDOR_TURN_SECONDS || 30));
+const RECONNECT_MS = 120_000;
+const DATA_DIR = process.env.QUORIDOR_DATA_DIR || path.dirname(fileURLToPath(import.meta.url));
+const DATA_FILE = path.join(DATA_DIR, 'quoridor-data.json');
 const N = 9;
-function persistStats() { try { fs.writeFileSync(statsFile, JSON.stringify(stats, null, 2)); } catch {} }
-function code() { const chars='ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; let v=''; for(let i=0;i<5;i++)v+=chars[randomInt(chars.length)]; return v; }
-function newRoom() { let id=code(); while(rooms.has(id))id=code(); const now=Date.now(); return {id,clients:[],tokens:[null,null],names:['Jugador 1','Jugador 2'],positions:[[4,8],[4,0]],walls:[10,10],hWalls:[],vWalls:[],turn:0,winner:null,turnStartedAt:now,turnDeadline:now+TURN_SECONDS*1000,chat:[]}; }
-function send(ws,m){if(ws?.readyState===1)ws.send(JSON.stringify(m));}
-function remaining(room){return Math.max(0, Math.ceil((room.turnDeadline-Date.now())/1000));}
-function state(room){return {type:'state',room:room.id,positions:room.positions,walls:room.walls,hWalls:room.hWalls,vWalls:room.vWalls,turn:room.turn,winner:room.winner,players:room.clients.filter(Boolean).length,names:room.names,turnSeconds:TURN_SECONDS,turnDeadline:room.turnDeadline,serverNow:Date.now(),remaining:remaining(room)};}
-function broadcast(room){for(const c of room.clients)send(c,state(room));}
-function same(a,b){return a[0]===b[0]&&a[1]===b[1];} function inside(p){return p[0]>=0&&p[0]<N&&p[1]>=0&&p[1]<N;} function key(w){return `${w[0]},${w[1]}`;}
-function blocked(r,a,b){if(a[0]!==b[0]){const x=Math.min(a[0],b[0]),y=a[1];return r.vWalls.some(w=>(w[0]===x&&w[1]===y)||(w[0]===x&&w[1]===y-1));}const x=a[0],y=Math.min(a[1],b[1]);return r.hWalls.some(w=>(w[0]===x&&w[1]===y)||(w[0]===x-1&&w[1]===y));}
-function legalMoves(r,player){const out=[],cur=r.positions[player],enemy=r.positions[1-player],dirs=[[0,-1],[0,1],[-1,0],[1,0]];for(const d of dirs){const n=[cur[0]+d[0],cur[1]+d[1]];if(!inside(n)||blocked(r,cur,n))continue;if(same(n,enemy)){const j=[n[0]+d[0],n[1]+d[1]];if(inside(j)&&!blocked(r,n,j))out.push(j);else for(const s of [[-d[1],d[0]],[d[1],-d[0]]]){const q=[n[0]+s[0],n[1]+s[1]];if(inside(q)&&!blocked(r,n,q))out.push(q);}}else out.push(n);}return out;}
-function hasPath(r,pl){const goal=pl===0?0:8,q=[r.positions[pl]],seen=new Set([key(q[0])]);while(q.length){const c=q.shift();if(c[1]===goal)return true;for(const d of [[0,-1],[0,1],[-1,0],[1,0]]){const n=[c[0]+d[0],c[1]+d[1]];if(inside(n)&&!blocked(r,c,n)&&!seen.has(key(n))){seen.add(key(n));q.push(n);}}}return false;}
-function wallConflict(r,w,o){const[x,y]=w;if(o==='h'){if(r.hWalls.some(a=>a[1]===y&&Math.abs(a[0]-x)<2))return true;return r.vWalls.some(a=>a[0]>=x&&a[0]<=x+1&&a[1]>=y&&a[1]<=y+1);}if(r.vWalls.some(a=>a[0]===x&&Math.abs(a[1]-y)<2))return true;return r.hWalls.some(a=>a[0]>=x&&a[0]<=x+1&&a[1]>=y&&a[1]<=y+1);}
-function validWall(r,w,o,p){if(r.walls[p]<=0||w[0]<0||w[0]>7||w[1]<0||w[1]>7||wallConflict(r,w,o))return false;const list=o==='h'?r.hWalls:r.vWalls;list.push(w);const ok=hasPath(r,0)&&hasPath(r,1);list.pop();return ok;}
-function nextTurn(r){r.turn=1-r.turn;r.turnStartedAt=Date.now();r.turnDeadline=r.turnStartedAt+TURN_SECONDS*1000;broadcast(r);}
-function record(r, winner, reason='goal'){const name=r.names[winner]||`Jugador ${winner+1}`;const s=stats[name] ||= {games:0,wins:0,losses:0,timeoutWins:0};s.games++;s.wins++;s.reason=reason;const other=stats[r.names[1-winner]] ||= {games:0,wins:0,losses:0};other.games++;other.losses++;if(reason==='timeout')s.timeoutWins++;persistStats();}
-function timeout(r){if(r.winner!==null||r.clients.filter(Boolean).length<2)return;r.winner=1-r.turn;record(r,r.winner,'timeout');broadcast(r);}
-function reset(r){r.positions=[[4,8],[4,0]];r.walls=[10,10];r.hWalls=[];r.vWalls=[];r.turn=0;r.winner=null;r.turnStartedAt=Date.now();r.turnDeadline=r.turnStartedAt+TURN_SECONDS*1000;broadcast(r);}
-function handle(ws,d){if(API_KEY&&d.apiKey!==API_KEY)return send(ws,{type:'error',message:'API key inválida'});
- if(d.type==='create_room'){const r=newRoom(),p=0;const t=randomUUID();r.tokens[p]=t;tokens.set(t,{room:r.id,player:p});r.clients[p]=ws;ws.room=r;ws.player=p;ws.token=t;r.names[p]=String(d.name||'Jugador 1').slice(0,24);send(ws,{type:'room_created',room:r.id,player:p,token:t});broadcast(r);return;}
- if(d.type==='join_room'){const r=rooms.get(String(d.room||'').toUpperCase());if(!r)return send(ws,{type:'error',message:'La sala no existe'});const p=r.clients[0]?1:0;if(r.clients[p])return send(ws,{type:'error',message:'La sala está llena'});const t=randomUUID();r.tokens[p]=t;tokens.set(t,{room:r.id,player:p});r.clients[p]=ws;ws.room=r;ws.player=p;ws.token=t;r.names[p]=String(d.name||`Jugador ${p+1}`).slice(0,24);send(ws,{type:'room_joined',room:r.id,player:p,token:t});broadcast(r);return;}
- if(d.type==='reconnect'){const hit=tokens.get(String(d.token||''));const r=hit&&rooms.get(hit.room);if(!r||String(d.room).toUpperCase()!==r.id)return send(ws,{type:'error',message:'Sesión no disponible'});const p=hit.player;r.clients[p]=ws;ws.room=r;ws.player=p;ws.token=d.token;send(ws,{type:'reconnected',room:r.id,player:p,token:d.token});broadcast(r);return;}
- const r=ws.room;if(!r)return send(ws,{type:'error',message:'Primero crea o únete a una sala'});
- if(d.type==='stats'){const ranking=Object.entries(stats).map(([name,s])=>({name,...s})).sort((a,b)=>b.wins-a.wins||b.games-a.games).slice(0,20);send(ws,{type:'stats',ranking});return;}
- if(d.type==='chat'){const text=String(d.text||'').trim().slice(0,80);if(text){const item={player:ws.player,text,at:Date.now()};r.chat.push(item);if(r.chat.length>30)r.chat.shift();for(const c of r.clients)send(c,{type:'chat',...item});}return;}
- if(d.type==='rematch'){if(r.clients.filter(Boolean).length>=1)reset(r);return;}
- if(r.winner!==null||r.clients.filter(Boolean).length<2||r.turn!==ws.player)return;
- if(Date.now()>=r.turnDeadline){timeout(r);return;}
- if(d.type==='move'){const dest=[Number(d.x),Number(d.y)];if(!legalMoves(r,ws.player).some(p=>same(p,dest)))return send(ws,{type:'error',message:'Movimiento inválido'});r.positions[ws.player]=dest;if((ws.player===0&&dest[1]===0)||(ws.player===1&&dest[1]===8)){r.winner=ws.player;record(r,ws.player);broadcast(r);}else nextTurn(r);return;}
- if(d.type==='wall'){const w=[Number(d.x),Number(d.y)],o=d.orientation==='v'?'v':'h';if(!validWall(r,w,o,ws.player))return send(ws,{type:'error',message:'Pared inválida'});(o==='h'?r.hWalls:r.vWalls).push(w);r.walls[ws.player]--;nextTurn(r);}
+const rooms = new Map(), sessions = new Map(), socketsByUser = new Map();
+const db = loadData();
+function loadData() { try { const d = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8')); return { users: {}, replays: {}, friends: {}, invitations: [], tournaments: {}, ...d }; } catch { try { const legacy = JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'stats.json'), 'utf8')); const users = {}; for (const [name, s] of Object.entries(legacy)) users[name] = { name, rating: 1000 + (s.wins || 0) * 20 - (s.losses || 0) * 10, ...s }; return { users, replays: {}, friends: {}, invitations: [], tournaments: {} }; } catch { return { users: {}, replays: {}, friends: {}, invitations: [], tournaments: {} }; } } }
+function saveData() { try { fs.mkdirSync(DATA_DIR, { recursive: true }); fs.writeFileSync(DATA_FILE, JSON.stringify(db, null, 2)); } catch (e) { console.warn('Data persistence unavailable:', e.message); } }
+function send(ws, value) { if (ws?.readyState === 1) ws.send(JSON.stringify(value)); }
+function notify(user, value) { const ws = socketsByUser.get(String(user)); if (ws) send(ws, { type: 'notification', ...value }); }
+function roomCode() { const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; let s = ''; do { s = Array.from({ length: 5 }, () => chars[randomInt(chars.length)]).join(''); } while (rooms.has(s)); return s; }
+function newRoom() { const now = Date.now(); return { id: roomCode(), sockets: [null, null], tokens: [null, null], names: ['Jugador 1', 'Jugador 2'], positions: [[4, 8], [4, 0]], walls: [10, 10], hWalls: [], vWalls: [], turn: 0, winner: null, turnDeadline: now + TURN_SECONDS * 1000, chat: [], replay: [] }; }
+const same = (a, b) => a[0] === b[0] && a[1] === b[1];
+const inside = p => p[0] >= 0 && p[0] < N && p[1] >= 0 && p[1] < N;
+const key = p => `${p[0]},${p[1]}`;
+function blocked(r, a, b) { if (a[0] !== b[0]) { const x = Math.min(a[0], b[0]), y = a[1]; return r.vWalls.some(w => (w[0] === x && w[1] === y) || (w[0] === x && w[1] === y - 1)); } const x = a[0], y = Math.min(a[1], b[1]); return r.hWalls.some(w => (w[0] === x && w[1] === y) || (w[0] === x - 1 && w[1] === y)); }
+function legalMoves(r, p) { const out = [], cur = r.positions[p], enemy = r.positions[1 - p], dirs = [[0, -1], [0, 1], [-1, 0], [1, 0]]; for (const d of dirs) { const n = [cur[0] + d[0], cur[1] + d[1]]; if (!inside(n) || blocked(r, cur, n)) continue; if (same(n, enemy)) { const j = [n[0] + d[0], n[1] + d[1]]; if (inside(j) && !blocked(r, n, j)) out.push(j); else for (const s of [[-d[1], d[0]], [d[1], -d[0]]]) { const q = [n[0] + s[0], n[1] + s[1]]; if (inside(q) && !blocked(r, n, q)) out.push(q); } } else out.push(n); } return out; }
+function hasPath(r, p) { const goal = p ? 8 : 0, q = [r.positions[p]], seen = new Set([key(q[0])]); while (q.length) { const c = q.shift(); if (c[1] === goal) return true; for (const d of [[0, -1], [0, 1], [-1, 0], [1, 0]]) { const n = [c[0] + d[0], c[1] + d[1]]; if (inside(n) && !blocked(r, c, n) && !seen.has(key(n))) { seen.add(key(n)); q.push(n); } } } return false; }
+function wallConflict(r, w, o) { const [x, y] = w; if (o === 'h') return r.hWalls.some(a => a[1] === y && Math.abs(a[0] - x) < 2) || r.vWalls.some(a => a[0] >= x && a[0] <= x + 1 && a[1] >= y && a[1] <= y + 1); return r.vWalls.some(a => a[0] === x && Math.abs(a[1] - y) < 2) || r.hWalls.some(a => a[0] >= x && a[0] <= x + 1 && a[1] >= y && a[1] <= y + 1); }
+function validWall(r, w, o, p) { if (r.walls[p] < 1 || w[0] < 0 || w[0] > 7 || w[1] < 0 || w[1] > 7 || wallConflict(r, w, o)) return false; const list = o === 'h' ? r.hWalls : r.vWalls; list.push(w); const valid = hasPath(r, 0) && hasPath(r, 1); list.pop(); return valid; }
+function state(r) { return { type: 'state', room: r.id, positions: r.positions, walls: r.walls, hWalls: r.hWalls, vWalls: r.vWalls, turn: r.turn, winner: r.winner, players: r.sockets.filter(Boolean).length, names: r.names, turnSeconds: TURN_SECONDS, turnDeadline: r.turnDeadline, serverNow: Date.now(), remaining: Math.max(0, Math.ceil((r.turnDeadline - Date.now()) / 1000)) }; }
+function broadcast(r, msg = state(r)) { r.sockets.forEach(s => send(s, msg)); }
+function nextTurn(r) { r.turn = 1 - r.turn; r.turnDeadline = Date.now() + TURN_SECONDS * 1000; broadcast(r); }
+function finish(r, winner, reason = 'goal') { if (r.winner !== null) return; r.winner = winner; const a = r.names[winner], b = r.names[1 - winner]; const ua = db.users[a] ||= { name: a, rating: 1000, games: 0, wins: 0, losses: 0 }; const ub = db.users[b] ||= { name: b, rating: 1000, games: 0, wins: 0, losses: 0 }; ua.games++; ua.wins++; ub.games++; ub.losses++; ua.rating += 20; ub.rating = Math.max(0, ub.rating - 10); if (reason === 'timeout') ua.timeoutWins = (ua.timeoutWins || 0) + 1; saveData(); broadcast(r); }
+function reset(r) { Object.assign(r, { positions: [[4, 8], [4, 0]], walls: [10, 10], hWalls: [], vWalls: [], turn: 0, winner: null, turnDeadline: Date.now() + TURN_SECONDS * 1000, replay: [] }); broadcast(r, { type: 'notification', event: 'rematch_started', room: r.id }); broadcast(r); }
+function ranking() { return Object.values(db.users).sort((a, b) => b.rating - a.rating || b.wins - a.wins).slice(0, 50); }
+function userName(d, fallback) { return String(d.user || d.name || fallback || '').trim().slice(0, 32); }
+function requireRoom(ws) { if (!ws.room) { send(ws, { type: 'error', message: 'Primero crea o únete a una sala' }); return null; } return ws.room; }
+function handle(ws, d) {
+  if (!d || typeof d !== 'object' || (API_KEY && d.apiKey !== API_KEY)) return send(ws, { type: 'error', message: 'API key inválida' });
+  if (d.type === 'create_room' || d.type === 'join_room' || d.type === 'reconnect') return joinFlow(ws, d);
+  const r = requireRoom(ws); const user = userName(d, ws.username); if (!r) return;
+  if (user) { ws.username = user; socketsByUser.set(user, ws); db.users[user] ||= { name: user, rating: 1000, games: 0, wins: 0, losses: 0 }; }
+  if (d.type === 'stats' || d.type === 'ranking_get') return send(ws, { type: d.type === 'stats' ? 'stats' : 'ranking', ranking: ranking() });
+  if (d.type === 'profile_get') return send(ws, { type: 'profile', profile: db.users[user] || { name: user, rating: 1000, games: 0, wins: 0, losses: 0 } });
+  if (d.type === 'chat') { const text = String(d.text || '').trim().slice(0, 120); if (text) { const item = { player: ws.player, text, at: Date.now() }; r.chat.push(item); if (r.chat.length > 30) r.chat.shift(); broadcast(r, { type: 'chat', ...item }); } return; }
+  if (d.type === 'rematch') return reset(r);
+  if (d.type === 'friends_get') return send(ws, { type: 'friend_status', friends: db.friends[user] || [] });
+  if (d.type === 'friend_accept') { const from = String(d.from || '').trim().slice(0, 32); if (!from) return send(ws, { type: 'error', message: 'Falta remitente' }); db.friends[user] = [...new Set([...(db.friends[user] || []), from])]; db.friends[from] = [...new Set([...(db.friends[from] || []), user])]; saveData(); notify(from, { event: 'friend_accepted', from: user }); return send(ws, { type: 'friend_status', friends: db.friends[user] }); }
+  if (d.type === 'invitation_accept' || d.type === 'challenge_accept' || d.type === 'rematch_accept') { const invitation = db.invitations.find(x => x.id === d.invitationId); if (invitation) { invitation.accepted = true; invitation.acceptedBy = user; saveData(); notify(invitation.from, { event: `${invitation.event}_accepted`, from: user, room: invitation.room }); } return send(ws, { type: 'notification', event: 'accepted' }); }
+  if (d.type === 'friend_request' || d.type === 'invite' || d.type === 'challenge_create' || d.type === 'rematch_request') { const to = String(d.to || d.friend || '').trim().slice(0, 32); if (!to) return send(ws, { type: 'error', message: 'Falta destinatario' }); const event = d.type === 'friend_request' ? 'friend_request' : d.type === 'challenge_create' ? 'challenge' : d.type === 'rematch_request' ? 'rematch_request' : 'room_invite'; const invitation = { id: randomUUID(), event, from: user, to, room: r.id, at: Date.now() }; db.invitations.push(invitation); saveData(); notify(to, { event, from: user, room: r.id, invitationId: invitation.id }); return send(ws, { type: 'notification', event: 'sent', to, invitationId: invitation.id }); }
+  if (d.type === 'replay_save') { const replay = { id: randomUUID(), user, moves: Array.isArray(d.moves) ? d.moves.slice(0, 500) : [], createdAt: Date.now() }; db.replays[user] ||= []; db.replays[user].unshift(replay); db.replays[user] = db.replays[user].slice(0, 100); saveData(); return send(ws, { type: 'replay_saved', replay }); }
+  if (d.type === 'replay_list') return send(ws, { type: 'replay_list', replays: db.replays[user] || [] });
+  if (d.type === 'tournament_create') { const t = { id: randomUUID(), name: String(d.name || 'Torneo Quoridor').slice(0, 60), owner: user, totalRounds: Math.max(1, Number(d.totalRounds || 3)), round: 1, status: 'open', players: [user], createdAt: Date.now() }; db.tournaments[t.id] = t; saveData(); return send(ws, { type: 'tournament', tournament: t }); }
+  if (d.type === 'tournament_join') { const t = db.tournaments[String(d.tournamentId)]; if (!t) return send(ws, { type: 'error', message: 'Torneo no existe' }); if (!t.players.includes(user)) t.players.push(user); saveData(); return send(ws, { type: 'tournament', tournament: t }); }
+  if (r.winner !== null || r.sockets.filter(Boolean).length < 2 || r.turn !== ws.player) return;
+  if (Date.now() >= r.turnDeadline) return finish(r, 1 - r.turn, 'timeout');
+  if (d.type === 'move') { const dest = [Number(d.x), Number(d.y)]; if (!legalMoves(r, ws.player).some(p => same(p, dest))) return send(ws, { type: 'error', message: 'Movimiento inválido' }); r.positions[ws.player] = dest; r.replay.push({ type: 'move', player: ws.player, x: dest[0], y: dest[1], at: Date.now() }); return (ws.player === 0 && dest[1] === 0) || (ws.player === 1 && dest[1] === 8) ? finish(r, ws.player) : nextTurn(r); }
+  if (d.type === 'wall') { const w = [Number(d.x), Number(d.y)], o = d.orientation === 'v' ? 'v' : 'h'; if (!validWall(r, w, o, ws.player)) return send(ws, { type: 'error', message: 'Pared inválida' }); (o === 'h' ? r.hWalls : r.vWalls).push(w); r.walls[ws.player]--; r.replay.push({ type: 'wall', player: ws.player, x: w[0], y: w[1], orientation: o, at: Date.now() }); return nextTurn(r); }
 }
-const wss=new WebSocketServer({port:PORT,path:'/ws'});wss.on('connection',ws=>{ws.on('message',raw=>{try{handle(ws,JSON.parse(raw.toString()));}catch{send(ws,{type:'error',message:'Mensaje inválido'});}});ws.on('close',()=>{const r=ws.room;if(!r)return;const p=ws.player;if(r.clients[p]===ws){r.clients[p]=null;for(const c of r.clients)send(c,{type:'opponent_left'});setTimeout(()=>{if(r.clients.every(c=>!c))rooms.delete(r.id);},120000);}});});
-setInterval(()=>{for(const r of rooms.values()){if(r.winner===null&&r.clients.filter(Boolean).length>=2&&Date.now()>=r.turnDeadline)timeout(r);else if(r.clients.some(Boolean))broadcast(r);}},1000);
-console.log(`Quoridor server escuchando en ws://localhost:${PORT}/ws`);
+function joinFlow(ws, d) {
+  if (d.type === 'reconnect') { const s = sessions.get(String(d.token || '')), r = s && rooms.get(s.room); if (!r || String(d.room || '').toUpperCase() !== r.id || s.expires < Date.now()) return send(ws, { type: 'error', message: 'Sesión no disponible' }); ws.room = r; ws.player = s.player; ws.token = d.token; r.sockets[s.player] = ws; ws.username = r.names[s.player]; send(ws, { type: 'reconnected', room: r.id, player: s.player, token: d.token }); return broadcast(r); }
+  const r = d.type === 'create_room' ? newRoom() : rooms.get(String(d.room || '').toUpperCase()); if (!r) return send(ws, { type: 'error', message: 'La sala no existe' }); const p = d.type === 'create_room' ? 0 : (r.sockets[0] ? 1 : 0); if (r.sockets[p]) return send(ws, { type: 'error', message: 'La sala está llena' }); const token = randomUUID(); r.tokens[p] = token; sessions.set(token, { room: r.id, player: p, expires: Date.now() + RECONNECT_MS }); r.sockets[p] = ws; ws.room = r; ws.player = p; ws.token = token; ws.username = userName(d, `Jugador ${p + 1}`); r.names[p] = ws.username; db.users[ws.username] ||= { name: ws.username, rating: 1000, games: 0, wins: 0, losses: 0 }; socketsByUser.set(ws.username, ws); send(ws, { type: d.type === 'create_room' ? 'room_created' : 'room_joined', room: r.id, player: p, token }); broadcast(r); }
+const server = http.createServer((req, res) => { if (req.url === '/health' || req.url === '/') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ ok: true, service: 'quoridor-server', rooms: rooms.size })); } res.writeHead(404); res.end(); });
+const wss = new WebSocketServer({ noServer: true }); server.on('upgrade', (req, socket, head) => { if (new URL(req.url, `http://${req.headers.host}`).pathname !== '/ws') return socket.destroy(); wss.handleUpgrade(req, socket, head, ws => wss.emit('connection', ws, req)); });
+wss.on('connection', ws => { ws.on('message', raw => { try { handle(ws, JSON.parse(raw.toString())); } catch { send(ws, { type: 'error', message: 'Mensaje inválido' }); } }); ws.on('close', () => { const r = ws.room; if (!r || r.sockets[ws.player] !== ws) return; r.sockets[ws.player] = null; if (ws.username && socketsByUser.get(ws.username) === ws) socketsByUser.delete(ws.username); sessions.get(ws.token)?.expires && sessions.set(ws.token, { room: r.id, player: ws.player, expires: Date.now() + RECONNECT_MS }); r.sockets.forEach(s => send(s, { type: 'opponent_left' })); setTimeout(() => { if (r.sockets.every(x => !x)) rooms.delete(r.id); }, RECONNECT_MS); }); });
+setInterval(() => { for (const r of rooms.values()) { if (r.winner === null && r.sockets.every(Boolean) && Date.now() >= r.turnDeadline) finish(r, 1 - r.turn, 'timeout'); else if (r.sockets.some(Boolean)) broadcast(r); } }, 1000);
+server.listen(PORT, () => console.log(`Quoridor server listening on port ${PORT}; WebSocket /ws`));

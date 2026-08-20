@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: quoridor-server
+    runtime: node
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: QUORIDOR_API_KEY
+        sync: false

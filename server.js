@@ -3,7 +3,7 @@ import http from 'node:http';
 
 const port = Number(process.env.PORT || 8787);
 const token = process.env.HF_TOKEN || '';
-const model = process.env.HF_MODEL || 'Qwen/Qwen2.5-7B-Instruct';
+const model = process.env.HF_MODEL || 'HuggingFaceTB/SmolLM3-3B';
 const allowed = process.env.ALLOWED_ORIGIN || '*';
 
 const system = `Eres un generador de eventos para un creador de videojuegos.
@@ -58,7 +58,8 @@ async function handle(req, res) {
         { role: 'user', content: prompt }
       ],
       max_tokens: 400,
-      temperature: 0.2
+      temperature: 0.2,
+      response_format: { type: 'json_object' }
     })
   });
 

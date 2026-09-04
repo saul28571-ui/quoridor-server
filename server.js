@@ -58,8 +58,7 @@ async function handle(req, res) {
         { role: 'user', content: prompt }
       ],
       max_tokens: 400,
-      temperature: 0.2,
-      response_format: { type: 'json_object' }
+      temperature: 0.2
     })
   });
 

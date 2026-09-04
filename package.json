@@ -1,9 +1,0 @@
-{
-  "name": "quoridor-server",
-  "version": "2.10.0",
-  "private": true,
-  "type": "module",
-  "engines": { "node": ">=18" },
-  "scripts": { "start": "node server.js", "check": "node --check server.js" },
-  "dependencies": { "ws": "^8.18.0" }
-}
